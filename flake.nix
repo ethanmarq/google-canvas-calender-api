@@ -1,3 +1,4 @@
+
 {
   description = "A Nix flake for syncing Canvas calendar to Google Calendar";
 
@@ -6,11 +7,19 @@
   };
 
   outputs = { self, nixpkgs }:
-    # This helper function applies the configuration to each supported system
-    nixpkgs.lib.eachDefaultSystem (system:
-      let
-        pkgs = nixpkgs.legacyPackages.${system};
+    let
+      # A list of systems we want our flake to support.
+      supportedSystems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
 
+      # A helper function to generate an attribute set for each supported system.
+      forEachSupportedSystem = f: nixpkgs.lib.genAttrs supportedSystems (system: f {
+        pkgs = import nixpkgs { inherit system; };
+      });
+
+    in
+    # Apply our logic to each of the supported systems.
+    forEachSupportedSystem ({ pkgs }:
+      let
         # Define the Python environment with required packages
         pythonEnv = pkgs.python3.withPackages (ps: [
           ps.requests
@@ -36,3 +45,4 @@
         };
       });
 }
+
