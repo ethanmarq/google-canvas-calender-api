@@ -6,15 +6,11 @@
   };
 
   outputs = { self, nixpkgs }:
-    let
-      # Support multiple systems
-      supportedSystems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
-      forEachSupportedSystem = f: nixpkgs.lib.genAttrs supportedSystems (system: f {
-        pkgs = import nixpkgs { inherit system; };
-      });
-    in
-    forEachSupportedSystem ({ pkgs }:
+    # This helper function applies the configuration to each supported system
+    nixpkgs.lib.eachDefaultSystem (system:
       let
+        pkgs = nixpkgs.legacyPackages.${system};
+
         # Define the Python environment with required packages
         pythonEnv = pkgs.python3.withPackages (ps: [
           ps.requests
@@ -24,21 +20,19 @@
         ]);
       in
       {
-        # The `nix run` command will execute this app
+        # The `nix run .` command will execute this app
         apps.default = {
           type = "app";
-          program = "${pkgs.writeShellScriptBin "canvas-google-sync" ''
+          program = "${pkgs.writeShellScriptBin "run-sync" ''
             #!${pkgs.stdenv.shell}
-            # This wrapper ensures the script runs with the correct Python interpreter and packages
-            exec "${pythonEnv}/bin/python" "${./canvas_google_sync.py}" "$@"
-          ''}/bin/canvas-google-sync";
+            # This wrapper runs the python script from the current directory
+            exec ${pythonEnv}/bin/python ${./calender_sync.py} "$@"
+          ''}/bin/run-sync";
         };
 
         # A development shell available via `nix develop`
         devShells.default = pkgs.mkShell {
-          packages = [
-            pythonEnv
-          ];
+          packages = [ pythonEnv ];
         };
       });
 }
