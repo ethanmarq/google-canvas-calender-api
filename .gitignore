@@ -1,1 +1,15 @@
 *.json
+
+
+# Nix files
+flake.lock
+result*
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Secrets - DO NOT COMMIT
+.env
+credentials.json
+token.json
