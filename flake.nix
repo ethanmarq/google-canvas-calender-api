@@ -1,4 +1,3 @@
-
 {
   description = "A Nix flake for syncing Canvas calendar to Google Calendar";
 
@@ -8,41 +7,45 @@
 
   outputs = { self, nixpkgs }:
     let
-      # A list of systems we want our flake to support.
-      supportedSystems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      # A helper to apply a function to each of the default systems supported by Nixpkgs
+      forAllSystems = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
 
-      # A helper function to generate an attribute set for each supported system.
-      forEachSupportedSystem = f: nixpkgs.lib.genAttrs supportedSystems (system: f {
-        pkgs = import nixpkgs { inherit system; };
-      });
-
+      # Define our Python package set once
+      pythonPackages = ps: [
+        ps.requests
+        ps.google-api-python-client
+        ps.google-auth-httplib2
+        ps.google-auth-oauthlib
+      ];
     in
-    # Apply our logic to each of the supported systems.
-    forEachSupportedSystem ({ pkgs }:
-      let
-        # Define the Python environment with required packages
-        pythonEnv = pkgs.python3.withPackages (ps: [
-          ps.requests
-          ps.google-api-python-client
-          ps.google-auth-httplib2
-          ps.google-auth-oauthlib
-        ]);
-      in
-      {
-        # The `nix run .` command will execute this app
-        apps.default = {
-          type = "app";
-          program = "${pkgs.writeShellScriptBin "run-sync" ''
-            #!${pkgs.stdenv.shell}
-            # This wrapper runs the python script from the current directory
-            exec ${pythonEnv}/bin/python ${./calender_sync.py} "$@"
-          ''}/bin/run-sync";
-        };
+    {
+      # This structure builds `apps.<system>.default`, which is what Nix expects
+      apps = forAllSystems (system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          pythonEnv = pkgs.python3.withPackages pythonPackages;
+        in
+        {
+          default = {
+            type = "app";
+            program = "${pkgs.writeShellScriptBin "run-sync" ''
+              #!${pkgs.stdenv.shell}
+              exec ${pythonEnv}/bin/python ${./calender_sync.py} "$@"
+            ''}/bin/run-sync";
+          };
+        });
 
-        # A development shell available via `nix develop`
-        devShells.default = pkgs.mkShell {
-          packages = [ pythonEnv ];
-        };
-      });
+      # This defines the development shell
+      devShells = forAllSystems (system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          default = pkgs.mkShell {
+            packages = [
+              (pkgs.python3.withPackages pythonPackages)
+            ];
+          };
+        });
+    };
 }
-
