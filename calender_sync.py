@@ -14,7 +14,7 @@ from googleapiclient.errors import HttpError
 
 # --- Configuration ---
 # 1. Canvas API Configuration
-CANVAS_API_URL = "https://canvas.instructure.com/api/v1/" # e.g., "https://canvas.instructure.com/api/v1"
+CANVAS_API_URL = "https://canvas.instructure.com/" # e.g., "https://canvas.instructure.com/api/v1"
 CANVAS_API_TOKEN = os.environ.get('CANVAS_API_TOKEN')
 
 # 2. Google Calendar Configuration
