@@ -3,17 +3,19 @@
 #              and adds them to a specified Google Calendar.
 
 import os
+import sys
 import datetime
 import requests
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 # --- Configuration ---
 # 1. Canvas API Configuration
 CANVAS_API_URL = "https://canvas.instructure.com/api/v1/" # e.g., "https://canvas.instructure.com/api/v1"
-CANVAS_API_TOKEN = "YOUR_CANVAS_API_TOKEN" 
+CANVAS_API_TOKEN = os.environ.get('CANVAS_API_TOKEN')
 
 # 2. Google Calendar Configuration
 GOOGLE_CALENDAR_ID = "primary" 
@@ -21,11 +23,9 @@ SCOPES = ['https://www.googleapis.com/auth/calendar']
 
 # --- Helper Functions ---
 
+
 def get_google_creds():
-    """
-    Handles Google Authentication and returns credentials.
-    It will create a token.json file to store the user's access and refresh tokens.
-    """
+    """Gets valid user credentials from storage or initiates OAuth2 flow."""
     creds = None
     if os.path.exists('token.json'):
         creds = Credentials.from_authorized_user_file('token.json', SCOPES)
@@ -34,11 +34,6 @@ def get_google_creds():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            # You need a credentials.json file from your Google Cloud project
-            # for this to work.
-            if not os.path.exists('credentials.json'):
-                print("Error: credentials.json not found. Please enable the Google Calendar API in your Google Cloud project and download the credentials file.")
-                return None
             flow = InstalledAppFlow.from_client_secrets_file(
                 'credentials.json', SCOPES)
             creds = flow.run_local_server(port=0)
@@ -47,104 +42,90 @@ def get_google_creds():
             token.write(creds.to_json())
     return creds
 
-def get_canvas_assignments():
+def get_canvas_assignments(api_url, api_token):
     """Fetches upcoming assignments from the Canvas API."""
-    headers = {
-        "Authorization": f"Bearer {CANVAS_API_TOKEN}"
-    }
-    # Get assignments for all courses for the current user
-    # The API returns assignments for courses the user is enrolled in.
-    url = f"{CANVAS_API_URL}/users/self/assignments"
-    
-    # We'll get assignments due from today onwards
-    start_date = datetime.datetime.utcnow().isoformat() + "Z"
-    params = {
-        'per_page': 50, # You can adjust this number
-        'bucket': 'upcoming'
-    }
-
+    headers = {'Authorization': f'Bearer {api_token}'}
+    # This endpoint gets upcoming assignments for the user
+    assignments_url = f'{api_url}/api/v1/users/self/upcoming_events'
     try:
-        response = requests.get(url, headers=headers, params=params)
-        response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
+        response = requests.get(assignments_url, headers=headers)
+        response.raise_for_status()  # Raises an exception for bad status codes
         return response.json()
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching assignments from Canvas: {e}")
+        print(f"Error fetching from Canvas API: {e}", file=sys.stderr)
         return []
 
-def add_event_to_google_calendar(service, assignment):
-    """Adds a single assignment as an event to Google Calendar."""
-    name = assignment.get('name', 'Untitled Assignment')
-    due_at = assignment.get('due_at')
-    
-    if not due_at:
-        return # Skip assignments without a due date
+def create_google_calendar_event(service, assignment):
+    """Creates a Google Calendar event for a given Canvas assignment."""
+    due_at_str = assignment.get('end_at')
+    if not due_at_str:
+        return # Skip assignments with no due date
 
-    # Canvas API returns ISO 8601 format (e.g., '2025-09-21T03:59:59Z')
-    due_datetime = datetime.datetime.fromisoformat(due_at.replace('Z', '+00:00'))
+    # Canvas dates are in ISO 8601 format (UTC)
+    due_at = datetime.datetime.fromisoformat(due_at_str.replace('Z', '+00:00'))
     
-    # Let's make the event last 1 hour
-    start_datetime = due_datetime - datetime.timedelta(hours=1)
+    # Google Calendar API works well with RFC3339 format
+    start_time = (due_at - datetime.timedelta(hours=1)).isoformat()
+    end_time = due_at.isoformat()
 
-    event_body = {
-        'summary': f"Assignment: {name}",
-        'description': f"Due: {name}\nView in Canvas: {assignment.get('html_url', 'N/A')}",
+    # Use a unique ID to prevent duplicate events on subsequent runs
+    event_id = f"canvas{assignment.get('id')}".replace('-', '').lower()
+
+    event = {
+        'id': event_id,
+        'summary': assignment.get('title', 'Untitled Assignment'),
+        'description': f"Due: {assignment.get('title')}\nCourse: {assignment.get('context_name')}\nLink: {assignment.get('html_url')}",
         'start': {
-            'dateTime': start_datetime.isoformat(),
-            'timeZone': 'UTC',
+            'dateTime': start_time,
         },
         'end': {
-            'dateTime': due_datetime.isoformat(),
-            'timeZone': 'UTC',
+            'dateTime': end_time,
         },
-        # Use the Canvas assignment ID to create a unique event ID to avoid duplicates
-        'id': f"canvas{assignment.get('id')}"
     }
 
     try:
-        # Using event IDs makes event creation idempotent. If an event with this ID
-        # already exists, it will be updated. If not, it will be created.
-        service.events().insert(
-            calendarId=GOOGLE_CALENDAR_ID,
-            body=event_body
-        ).execute()
-        print(f"Successfully added/updated event: {name}")
-    except Exception as e:
-        # It's possible the event already exists and you try to insert.
-        # A more robust solution would be to first try to get() the event
-        # and then either update() or insert(). For simplicity, we'll just print.
-        if 'already exists' in str(e):
-             print(f"Event '{name}' already exists. Skipping.")
+        # Use insert with the event ID. If it exists, it fails, so we update it.
+        service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
+        print(f"Created event: {event['summary']}")
+    except HttpError as error:
+        if error.resp.status == 409: # 409 is the status code for "Conflict" (duplicate ID)
+            try:
+                service.events().update(calendarId=CALENDAR_ID, eventId=event_id, body=event).execute()
+                print(f"Updated event: {event['summary']}")
+            except HttpError as update_error:
+                print(f"Failed to update event '{event['summary']}': {update_error}", file=sys.stderr)
         else:
-            print(f"An error occurred while adding '{name}': {e}")
-
+            print(f"An error occurred creating event '{event['summary']}': {error}", file=sys.stderr)
 
 def main():
-    """Main function to run the synchronization process."""
-    print("Starting Canvas to Google Calendar sync...")
+    """Main function to run the sync process."""
+    # Gracefully exit if the API token is not set
+    if not CANVAS_API_TOKEN:
+        print("Error: The CANVAS_API_TOKEN environment variable is not set.", file=sys.stderr)
+        print("Please create a .env file (and add it to .gitignore) with the line:", file=sys.stderr)
+        print("export CANVAS_API_TOKEN='your_token_here'", file=sys.stderr)
+        sys.exit(1)
 
-    # 1. Authenticate with Google
     creds = get_google_creds()
-    if not creds:
-        print("Could not authenticate with Google. Exiting.")
-        return
-        
-    google_calendar_service = build('calendar', 'v3', credentials=creds)
-    print("Successfully authenticated with Google Calendar.")
+    try:
+        service = build('calendar', 'v3', credentials=creds)
+        print("Successfully connected to Google Calendar.")
 
-    # 2. Get Canvas Assignments
-    print("Fetching assignments from Canvas...")
-    assignments = get_canvas_assignments()
-    if not assignments:
-        print("No upcoming assignments found or error fetching them.")
-        return
-    print(f"Found {len(assignments)} upcoming assignments.")
+        assignments = get_canvas_assignments(CANVAS_API_URL, CANVAS_API_TOKEN)
+        if not assignments:
+            print("No upcoming assignments found or failed to fetch from Canvas.")
+            return
 
-    # 3. Add assignments to Google Calendar
-    for assignment in assignments:
-        add_event_to_google_calendar(google_calendar_service, assignment)
+        print(f"Found {len(assignments)} upcoming assignments. Syncing to Google Calendar...")
+        for assignment in assignments:
+            create_google_calendar_event(service, assignment)
+        print("Sync complete.")
 
-    print("\nSync process complete.")
-
+    except HttpError as error:
+        print(f'An error occurred with the Google API: {error}', file=sys.stderr)
+    except Exception as e:
+        print(f'An unexpected error occurred: {e}', file=sys.stderr)
 
 if __name__ == '__main__':
     main()
+
